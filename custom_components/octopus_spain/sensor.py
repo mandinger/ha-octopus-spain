@@ -14,8 +14,7 @@ from homeassistant.const import (
 )
 
 from homeassistant.components.sensor import (
-    STATE_CLASS_MEASUREMENT,
-    SensorEntityDescription, SensorEntity
+    SensorEntityDescription, SensorEntity, SensorStateClass
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -73,7 +72,7 @@ class OctopusWallet(CoordinatorEntity, SensorEntity):
             key=f"{key}_{account}",
             icon="mdi:piggy-bank-outline",
             native_unit_of_measurement=CURRENCY_EURO,
-            state_class=STATE_CLASS_MEASUREMENT
+            state_class=SensorStateClass.MEASUREMENT
         )
 
     async def async_added_to_hass(self) -> None:
@@ -104,7 +103,7 @@ class OctopusInvoice(CoordinatorEntity, SensorEntity):
             key=f"last_invoice_{account}",
             icon="mdi:currency-eur",
             native_unit_of_measurement=CURRENCY_EURO,
-            state_class=STATE_CLASS_MEASUREMENT
+            state_class=SensorStateClass.MEASUREMENT
         )
 
     async def async_added_to_hass(self) -> None:
