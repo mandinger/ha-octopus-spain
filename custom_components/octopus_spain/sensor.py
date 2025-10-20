@@ -1,7 +1,7 @@
 import logging
 from datetime import timedelta
 from datetime import datetime, date, time
-from homeassistant.const import ENERGY_KILO_WATT_HOUR
+from homeassistant.const import KILO_WATT_HOUR
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.util import dt as dt_util
 from homeassistant.components.recorder.statistics import (
@@ -156,7 +156,7 @@ class OctopusConsumption(CoordinatorEntity, SensorEntity):
         self.entity_description = SensorEntityDescription(
             key=f"consumption_{account}",
             icon="mdi:lightning-bolt",
-            native_unit_of_measurement=ENERGY_KILO_WATT_HOUR,
+            native_unit_of_measurement=KILO_WATT_HOUR,
             device_class=SensorDeviceClass.ENERGY,
             state_class=SensorStateClass.TOTAL_INCREASING,  # state shows the cumulative kWh
         )
@@ -199,7 +199,7 @@ class OctopusConsumption(CoordinatorEntity, SensorEntity):
                 "name": self._attr_name,
                 "source": DOMAIN,
                 "statistic_id": self._statistic_id,
-                "unit_of_measurement": ENERGY_KILO_WATT_HOUR,
+                "unit_of_measurement": KILO_WATT_HOUR,
             }
 
             # Sort measurements by start time just in case
