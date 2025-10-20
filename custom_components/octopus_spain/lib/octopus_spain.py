@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
+import os
 
 from python_graphql_client import GraphqlClient
 
@@ -51,6 +52,78 @@ class OctopusSpain:
 
         return list(map(lambda a: a["number"], response["data"]["viewer"]["accounts"]))
 
+    async def hourly_consumption(self, account: str):
+
+        query = """
+            query getMeasurements(
+                $account: String!,
+                $startAt: DateTime!,
+                $endAt: DateTime!
+                ) {
+                account(accountNumber: $account) {
+                    properties {
+                    id
+                    measurements(
+                        first: 1500,
+                        utilityFilters: [
+                                            {
+                                            "electricityFilters": {
+                                                "readingDirection": "CONSUMPTION",
+                                                "readingFrequencyType": "HOUR_INTERVAL"
+                                            }
+                                            }
+                                        ],
+                        startAt: $startAt,
+                        endAt: $endAt,
+                        timezone: "Etc/GMT"
+                    ) {
+                        edges {
+                        node {
+                            value
+                            unit
+                            ... on IntervalMeasurementType {
+                            startAt
+                            endAt
+                            }
+                        }
+                        }
+                    }
+                    }
+                }
+            }
+        """
+
+        today_local = datetime.now(tz).date()
+        start_date = today_local - timedelta(days=10)
+        start_local = datetime.combine(start_date, time.min, tzinfo=tz)
+        end_local = datetime.combine(today_local + timedelta(days=1), time.min, tzinfo=tz)
+        start_utc = start_local.astimezone(timezone.utc)
+        end_utc = end_local.astimezone(timezone.utc)
+        def to_utc_iso_z(dt: datetime) -> str:
+            return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        variables = {
+            "account": account,
+            "startAt": to_utc_iso_z(start_utc),
+            "endAt": to_utc_iso_z(end_utc)
+        }
+        headers = {"authorization": self._token}
+        client = GraphqlClient(endpoint=GRAPH_QL_ENDPOINT, headers=headers)
+        response = await client.execute_async(query, variables)
+        props = response.get("data", {}).get("account", {}).get("properties", [])
+        if not props:
+            return []
+        edges = props[0]["measurements"]["edges"]
+        measurements = [
+            {
+                "value": edge["node"]["value"],
+                "unit": edge["node"]["unit"],
+                "startAt": edge["node"]["startAt"],
+                "endAt": edge["node"]["endAt"],
+            }
+            for edge in edges
+        ]
+        return measurements
+    
     async def account(self, account: str):
         query = """
             query ($account: String!) {
