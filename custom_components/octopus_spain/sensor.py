@@ -1,86 +1,94 @@
 import logging
-from datetime import timedelta
 from datetime import datetime, date, time
-from homeassistant.const import KILO_WATT_HOUR
-from homeassistant.components.sensor import SensorDeviceClass
-from homeassistant.util import dt as dt_util
-from homeassistant.components.recorder.statistics import (
-    async_add_external_statistics,
-    async_get_last_statistics,
-)
 from decimal import Decimal, InvalidOperation
-
-from .const import DOMAIN
-from typing import Mapping, Any
-
-from homeassistant.helpers.typing import StateType
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, CoordinatorEntity
-from .const import (
-    CONF_PASSWORD,
-    CONF_EMAIL, UPDATE_INTERVAL
-)
-
-from homeassistant.const import (
-    CURRENCY_EURO,
-)
+from typing import Any, Mapping
 
 from homeassistant.components.sensor import (
-    SensorEntityDescription, SensorEntity, SensorStateClass
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+    SensorDeviceClass,
 )
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import (
+    CURRENCY_EURO,
+    UnitOfEnergy,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from .lib.octopus_spain import OctopusSpain
+from homeassistant.helpers.typing import StateType
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
+
+try:
+    from homeassistant.components.recorder.statistics import (
+        async_add_external_statistics,
+        async_get_last_statistics,
+    )
+except ImportError:  # Home Assistant 2025.1+ moved helpers
+    from functools import partial
+
+    from homeassistant.components.recorder import statistics as recorder_statistics
+
+    async def async_add_external_statistics(hass, metadata, statistics):
+        """Compatibility shim calling sync implementation in executor."""
+        await hass.async_add_executor_job(
+            recorder_statistics.add_external_statistics, hass, metadata, statistics
+        )
+
+    async def async_get_last_statistics(hass, *args, **kwargs):
+        """Compatibility shim calling sync implementation in executor."""
+        func = partial(recorder_statistics.get_last_statistics, hass, *args, **kwargs)
+        return await hass.async_add_executor_job(func)
+
+from .const import DOMAIN
+from .coordinator import OctopusCoordinator
+from .runtime import OctopusSpainConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
-    email = entry.data[CONF_EMAIL]
-    password = entry.data[CONF_PASSWORD]
-
-    sensors = []
-    coordinator = OctopusCoordinator(hass, email, password)
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: OctopusSpainConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    coordinator = entry.runtime_data.coordinator
     await coordinator.async_config_entry_first_refresh()
 
-    accounts = coordinator.data.keys()
+    sensors = []
+    accounts = list(coordinator.data)
+    single_account = len(accounts) == 1
     for account in accounts:
-        sensors.append(OctopusWallet(account, 'solar_wallet', 'Solar Wallet', coordinator, len(accounts) == 1))
-        sensors.append(OctopusWallet(account, 'octopus_credit', 'Octopus Credit', coordinator, len(accounts) == 1))
-        sensors.append(OctopusInvoice(account, coordinator, len(accounts) == 1))
-        sensors.append(OctopusConsumption(account, coordinator, len(accounts) == 1))
+        sensors.append(
+            OctopusWallet(account, "solar_wallet", "Solar Wallet", coordinator, single_account)
+        )
+        sensors.append(
+            OctopusWallet(
+                account, "octopus_credit", "Octopus Credit", coordinator, single_account
+            )
+        )
+        sensors.append(OctopusInvoice(account, coordinator, single_account))
+        sensors.append(OctopusConsumption(account, coordinator, single_account))
 
     async_add_entities(sensors)
 
 
-class OctopusCoordinator(DataUpdateCoordinator):
+class OctopusWallet(CoordinatorEntity[OctopusCoordinator], SensorEntity):
 
-    def __init__(self, hass: HomeAssistant, email: str, password: str):
-        super().__init__(hass=hass, logger=_LOGGER, name="Octopus Spain", update_interval=timedelta(hours=UPDATE_INTERVAL))
-        self._api = OctopusSpain(email, password)
-        self._data = {}
-
-    async def _async_update_data(self):
-        if await self._api.login():
-            self._data = {}
-            accounts = await self._api.accounts()
-            for account in accounts:
-                acc = await self._api.account(account)
-                if 'hourly_consumption' not in acc:
-                    acc['hourly_consumption'] = await self._api.hourly_consumption(account)
-                    self._data[account] = acc
-        return self._data
-
-
-class OctopusWallet(CoordinatorEntity, SensorEntity):
-
-    def __init__(self, account: str, key: str, name: str, coordinator, single: bool):
+    def __init__(
+        self,
+        account: str,
+        key: str,
+        name: str,
+        coordinator: OctopusCoordinator,
+        single: bool,
+    ) -> None:
         super().__init__(coordinator=coordinator)
         self._state = None
         self._key = key
         self._account = account
         self._attrs: Mapping[str, Any] = {}
-        self._attr_name = f"{name}" if single else f"{name} ({account})"
+        self._attr_name = name if single else f"{name} ({account})"
         self._attr_unique_id = f"{key}_{account}"
         self.entity_description = SensorEntityDescription(
             key=f"{key}_{account}",
@@ -104,9 +112,9 @@ class OctopusWallet(CoordinatorEntity, SensorEntity):
         return self._state
 
 
-class OctopusInvoice(CoordinatorEntity, SensorEntity):
+class OctopusInvoice(CoordinatorEntity[OctopusCoordinator], SensorEntity):
 
-    def __init__(self, account: str, coordinator, single: bool):
+    def __init__(self, account: str, coordinator: OctopusCoordinator, single: bool) -> None:
         super().__init__(coordinator=coordinator)
         self._state = None
         self._account = account
@@ -144,8 +152,8 @@ class OctopusInvoice(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self) -> Mapping[str, Any] | None:
         return self._attrs
 
-class OctopusConsumption(CoordinatorEntity, SensorEntity):
-    def __init__(self, account: str, coordinator, single: bool):
+class OctopusConsumption(CoordinatorEntity[OctopusCoordinator], SensorEntity):
+    def __init__(self, account: str, coordinator: OctopusCoordinator, single: bool) -> None:
         super().__init__(coordinator=coordinator)
         self._account = account
         self._state = None  # we'll expose the current cumulative sum as state
@@ -156,7 +164,7 @@ class OctopusConsumption(CoordinatorEntity, SensorEntity):
         self.entity_description = SensorEntityDescription(
             key=f"consumption_{account}",
             icon="mdi:lightning-bolt",
-            native_unit_of_measurement=KILO_WATT_HOUR,
+            native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
             device_class=SensorDeviceClass.ENERGY,
             state_class=SensorStateClass.TOTAL_INCREASING,  # state shows the cumulative kWh
         )
@@ -199,7 +207,7 @@ class OctopusConsumption(CoordinatorEntity, SensorEntity):
                 "name": self._attr_name,
                 "source": DOMAIN,
                 "statistic_id": self._statistic_id,
-                "unit_of_measurement": KILO_WATT_HOUR,
+                "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR,
             }
 
             # Sort measurements by start time just in case
