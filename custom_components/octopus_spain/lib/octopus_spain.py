@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, timezone
 import os
 
 from python_graphql_client import GraphqlClient
@@ -9,9 +9,10 @@ ELECTRICITY_LEDGER = "SPAIN_ELECTRICITY_LEDGER"
 
 
 class OctopusSpain:
-    def __init__(self, email, password):
+    def __init__(self, email, password, apikey):
         self._email = email
         self._password = password
+        self._apikey = apikey
         self._token = None
 
     async def login(self):
@@ -22,7 +23,10 @@ class OctopusSpain:
               }
             }
         """
-        variables = {"input": {"email": self._email, "password": self._password}}
+        if self._apikey is None:
+            variables = {"input": {"email": self._email, "password": self._password}}
+        else:
+            variables = {"input": {"APIKey": self._apikey}}
 
         client = GraphqlClient(endpoint=GRAPH_QL_ENDPOINT)
         response = await client.execute_async(mutation, variables)
@@ -93,6 +97,7 @@ class OctopusSpain:
             }
         """
 
+        tz = timezone.utc
         today_local = datetime.now(tz).date()
         start_date = today_local - timedelta(days=10)
         start_local = datetime.combine(start_date, time.min, tzinfo=tz)
