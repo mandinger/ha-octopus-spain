@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, time, timezone
+import logging
 import os
 
 from python_graphql_client import GraphqlClient
@@ -6,6 +7,8 @@ from python_graphql_client import GraphqlClient
 GRAPH_QL_ENDPOINT = "https://api.oees-kraken.energy/v1/graphql/"
 SOLAR_WALLET_LEDGER = "SOLAR_WALLET_LEDGER"
 ELECTRICITY_LEDGER = "SPAIN_ELECTRICITY_LEDGER"
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class OctopusSpain:
@@ -62,21 +65,15 @@ class OctopusSpain:
             query getMeasurements(
                 $account: String!,
                 $startAt: DateTime!,
-                $endAt: DateTime!
+                $endAt: DateTime!,
+                $utilityFilters: [UtilityFiltersInput!]
                 ) {
                 account(accountNumber: $account) {
                     properties {
                     id
                     measurements(
                         first: 1500,
-                        utilityFilters: [
-                                            {
-                                            "electricityFilters": {
-                                                "readingDirection": "CONSUMPTION",
-                                                "readingFrequencyType": "HOUR_INTERVAL"
-                                            }
-                                            }
-                                        ],
+                        utilityFilters: $utilityFilters,
                         startAt: $startAt,
                         endAt: $endAt,
                         timezone: "Etc/GMT"
@@ -109,15 +106,54 @@ class OctopusSpain:
         variables = {
             "account": account,
             "startAt": to_utc_iso_z(start_utc),
-            "endAt": to_utc_iso_z(end_utc)
+            "endAt": to_utc_iso_z(end_utc),
+            "utilityFilters":[{"electricityFilters": {"readingDirection": "CONSUMPTION","readingFrequencyType": "HOUR_INTERVAL"}}]
         }
         headers = {"authorization": self._token}
         client = GraphqlClient(endpoint=GRAPH_QL_ENDPOINT, headers=headers)
         response = await client.execute_async(query, variables)
+        if "errors" in response:
+            _LOGGER.error(
+                "GraphQL errors while fetching hourly consumption for account %s: %s",
+                account,
+                response["errors"],
+            )
+            return []
+
+        _LOGGER.debug(
+            "Hourly consumption query for account %s executed. Start=%s End=%s",
+            account,
+            variables["startAt"],
+            variables["endAt"],
+        )
+
         props = response.get("data", {}).get("account", {}).get("properties", [])
         if not props:
+            _LOGGER.warning(
+                "No properties returned in hourly consumption response for account %s",
+                account,
+            )
             return []
-        edges = props[0]["measurements"]["edges"]
+        try:
+            edges = props[0]["measurements"]["edges"]
+        except (KeyError, IndexError, TypeError) as err:
+            _LOGGER.error(
+                "Unexpected hourly consumption response format for account %s: %s",
+                account,
+                err,
+            )
+            _LOGGER.debug(
+                "Hourly consumption raw response for account %s: %s", account, response
+            )
+            return []
+
+        if not edges:
+            _LOGGER.debug(
+                "Hourly consumption response returned 0 measurements for account %s",
+                account,
+            )
+            return []
+
         measurements = [
             {
                 "value": edge["node"]["value"],
