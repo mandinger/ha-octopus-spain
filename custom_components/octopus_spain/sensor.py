@@ -1,4 +1,5 @@
 import logging
+from inspect import iscoroutinefunction
 from datetime import datetime, date, time
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Callable
@@ -328,7 +329,12 @@ class OctopusConsumptionStatisticsImporter:
                     metadata,
                     statistics,
                 )
-                await async_add_external_statistics(self._hass, metadata, statistics)
+                if iscoroutinefunction(async_add_external_statistics):
+                    await async_add_external_statistics(self._hass, metadata, statistics)
+                else:
+                    await self._hass.async_add_executor_job(
+                        async_add_external_statistics, self._hass, metadata, statistics
+                    )
                 _LOGGER.debug(
                     "%s: added %d statistics entries",
                     prefix,
