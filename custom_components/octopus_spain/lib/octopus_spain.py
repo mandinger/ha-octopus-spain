@@ -118,7 +118,7 @@ class OctopusSpain:
             end_local = end_local.astimezone(tz)
 
         if start is None:
-            default_start = now_utc.date() - timedelta(days=10)
+            default_start = now_utc.date() - timedelta(days=1)
             start_local = datetime.combine(default_start, time.min, tzinfo=tz)
         else:
             start_local = start if start.tzinfo else start.replace(tzinfo=tz)

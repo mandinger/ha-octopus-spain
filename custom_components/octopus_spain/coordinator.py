@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 
 from .const import UPDATE_INTERVAL
 from .lib.octopus_spain import OctopusSpain
@@ -33,7 +34,20 @@ class OctopusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for account in accounts:
                 acc = await self._api.account(account)
                 if "hourly_consumption" not in acc:
-                    acc["hourly_consumption"] = await self._api.hourly_consumption(account)
+                    hourly_consumption: list[dict[str, Any]] = []
+                    today = dt_util.utcnow().date()
+                    start_day = today - timedelta(days=2)
+                    day_cursor = start_day
+                    while day_cursor <= today:
+                        day_start = datetime.combine(day_cursor, time.min, dt_util.UTC)
+                        day_end = day_start + timedelta(days=1)
+                        fetched = await self._api.hourly_consumption(
+                            account, start=day_start, end=day_end
+                        )
+                        if fetched:
+                            hourly_consumption.extend(fetched)
+                        day_cursor += timedelta(days=1)
+                    acc["hourly_consumption"] = hourly_consumption
                 self._data[account] = acc
         return self._data
 

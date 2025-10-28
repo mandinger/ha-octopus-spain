@@ -25,6 +25,10 @@ from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
 )
+try:
+    from homeassistant.components.recorder.statistics import STATISTIC_SUM
+except ImportError:  # pragma: no cover - fallback if constant missing
+    STATISTIC_SUM = "sum"
 from .const import DOMAIN
 from .coordinator import OctopusCoordinator
 from .runtime import OctopusSpainConfigEntry
@@ -159,7 +163,7 @@ class OctopusConsumptionStatisticsImporter:
         self._coordinator = coordinator
         self._account = account
         safe_account = slugify(account)
-        self._statistic_id = f"sensor.energy_consumption_{safe_account}"
+        self._statistic_id = f"{DOMAIN}:energy_consumption_{safe_account}"
         self._name = "Consumo Electrico" if single else f"Consumo Electrico ({account})"
         self._remove_listener: Callable[[], None] | None = None
 
@@ -196,7 +200,12 @@ class OctopusConsumptionStatisticsImporter:
                 self._statistic_id,
             )
             last = await get_instance(self._hass).async_add_executor_job(
-                get_last_statistics, self._hass, 1, self._statistic_id, True, set()
+                get_last_statistics,
+                self._hass,
+                1,
+                self._statistic_id,
+                True,
+                {STATISTIC_SUM},
             )
             _LOGGER.debug("%s: last statistics response=%s", prefix, last)
 
@@ -244,16 +253,6 @@ class OctopusConsumptionStatisticsImporter:
             else:
                 _LOGGER.debug("%s: no existing statistics found, starting fresh", prefix)
 
-            measurements_by_start: dict[str, Any] = {}
-            if isinstance(measurements_raw, list):
-                for item in measurements_raw:
-                    start_at = item.get("startAt")
-                    if not start_at:
-                        continue
-                    measurements_by_start[start_at] = item
-
-            additional_count = 0
-            fetched_days: list[date] = []
             now_utc = dt_util.utcnow()
             today_utc = now_utc.date()
 
@@ -263,6 +262,36 @@ class OctopusConsumptionStatisticsImporter:
                 ).date()
             else:
                 fetch_start_day = (last_start + timedelta(hours=1)).date()
+
+            keep_from_utc = datetime.combine(fetch_start_day, time.min, dt_util.UTC)
+
+            def _parse_dt(dt_str: str):
+                dt = dt_util.parse_datetime(dt_str)
+                if dt is None:
+                    return None
+                return dt_util.as_utc(dt)
+
+            measurements_by_start: dict[datetime, Any] = {}
+            skipped_seed_unparsed = 0
+            skipped_seed_before_window = 0
+            if isinstance(measurements_raw, list):
+                for item in measurements_raw:
+                    start_at = item.get("startAt")
+                    if not start_at:
+                        continue
+                    start_utc = _parse_dt(start_at)
+                    if start_utc is None:
+                        skipped_seed_unparsed += 1
+                        continue
+                    if start_utc < keep_from_utc:
+                        skipped_seed_before_window += 1
+                        continue
+                    measurements_by_start[start_utc] = item
+
+            additional_count = 0
+            fetched_days: list[date] = []
+            skipped_additional_unparsed = 0
+            skipped_additional_missing = 0
 
             if fetch_start_day <= today_utc:
                 day_cursor = fetch_start_day
@@ -286,8 +315,14 @@ class OctopusConsumptionStatisticsImporter:
                         for item in fetched:
                             start_at = item.get("startAt")
                             if not start_at:
+                                skipped_additional_missing += 1
                                 continue
-                            measurements_by_start[start_at] = item
+                            start_utc = _parse_dt(start_at)
+                            if start_utc is None:
+                                continue
+                            if start_utc < keep_from_utc:
+                                continue
+                            measurements_by_start[start_utc] = item
                     day_cursor += timedelta(days=1)
             else:
                 _LOGGER.debug(
@@ -299,11 +334,15 @@ class OctopusConsumptionStatisticsImporter:
 
             total_measurements = len(measurements_by_start)
             _LOGGER.debug(
-                "%s: consolidated measurements total=%s additional=%s fetched_days=%s",
+                "%s: consolidated measurements total=%s additional=%s fetched_days=%s seed_skipped_before=%s seed_skipped_unparsed=%s fetched_skipped_unparsed=%s fetched_skipped_missing=%s",
                 prefix,
                 total_measurements,
                 additional_count,
                 fetched_days,
+                skipped_seed_before_window,
+                skipped_seed_unparsed,
+                skipped_additional_unparsed,
+                skipped_additional_missing,
             )
             if not measurements_by_start:
                 _LOGGER.debug(
@@ -311,8 +350,6 @@ class OctopusConsumptionStatisticsImporter:
                     prefix,
                 )
                 return
-
-            measurements = list(measurements_by_start.values())
 
             metadata = {
                 "has_mean": False,
@@ -324,30 +361,7 @@ class OctopusConsumptionStatisticsImporter:
             }
             _LOGGER.debug("%s: filled metadata statistics metadata=%s", prefix, metadata)
 
-            def _parse_dt(dt_str: str):
-                dt = dt_util.parse_datetime(dt_str)
-                if dt is None:
-                    return None
-                return dt_util.as_utc(dt)
-
-            parsed_measurements = []
-            skip_unparsed = 0
-            for m in measurements:
-                start_at = m.get("startAt")
-                start_utc = _parse_dt(start_at)
-                if start_utc is None:
-                    skip_unparsed += 1
-                    continue
-                parsed_measurements.append((start_utc, m))
-
-            _LOGGER.debug(
-                "%s: parsed measurements count=%s skipped_unparsed=%s",
-                prefix,
-                len(parsed_measurements),
-                skip_unparsed,
-            )
-
-            sorted_meas = sorted(parsed_measurements, key=lambda item: item[0])
+            sorted_meas = sorted(measurements_by_start.items(), key=lambda item: item[0])
             _LOGGER.debug("%s: sorted measurements count=%s", prefix, len(sorted_meas))
 
             statistics = []
@@ -412,4 +426,3 @@ class OctopusConsumptionStatisticsImporter:
 
         except Exception as err:  # pylint: disable=broad-except
             _LOGGER.exception("%s: error importing consumption statistics: %s", prefix, err)
-
