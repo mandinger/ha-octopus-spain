@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -36,3 +36,12 @@ class OctopusCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     acc["hourly_consumption"] = await self._api.hourly_consumption(account)
                 self._data[account] = acc
         return self._data
+
+    async def async_fetch_hourly_consumption(
+        self,
+        account: str,
+        start: datetime,
+        end: datetime,
+    ) -> list[dict[str, Any]]:
+        """Fetch hourly consumption for a specific range."""
+        return await self._api.hourly_consumption(account, start=start, end=end)

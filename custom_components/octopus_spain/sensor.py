@@ -1,6 +1,6 @@
 import logging
 from inspect import iscoroutinefunction
-from datetime import datetime, date, time
+from datetime import datetime, date, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Callable
 
@@ -159,7 +159,7 @@ class OctopusConsumptionStatisticsImporter:
         self._coordinator = coordinator
         self._account = account
         safe_account = slugify(account)
-        self._statistic_id = f"{DOMAIN}:energy_consumption_{safe_account}"
+        self._statistic_id = f"sensor.energy_consumption_{safe_account}"
         self._name = "Consumo Electrico" if single else f"Consumo Electrico ({account})"
         self._remove_listener: Callable[[], None] | None = None
 
@@ -181,17 +181,14 @@ class OctopusConsumptionStatisticsImporter:
     async def _async_process_update(self) -> None:
         prefix = f"OctopusConsumptionStats[{self._account}]"
         try:
-            measurements = self._coordinator.data[self._account].get("hourly_consumption", [])
-            meas_count = len(measurements) if isinstance(measurements, list) else "unknown"
+            measurements_raw = self._coordinator.data[self._account].get("hourly_consumption", [])
+            meas_count = len(measurements_raw) if isinstance(measurements_raw, list) else "unknown"
             _LOGGER.debug(
                 "%s: fetched hourly measurements count=%s type=%s",
                 prefix,
                 meas_count,
-                type(measurements).__name__,
+                type(measurements_raw).__name__,
             )
-            if not measurements:
-                _LOGGER.debug("%s: no hourly consumption data available to import", prefix)
-                return
 
             _LOGGER.debug(
                 "%s: requesting last statistics statistic_id=%s",
@@ -246,6 +243,76 @@ class OctopusConsumptionStatisticsImporter:
                 )
             else:
                 _LOGGER.debug("%s: no existing statistics found, starting fresh", prefix)
+
+            measurements_by_start: dict[str, Any] = {}
+            if isinstance(measurements_raw, list):
+                for item in measurements_raw:
+                    start_at = item.get("startAt")
+                    if not start_at:
+                        continue
+                    measurements_by_start[start_at] = item
+
+            additional_count = 0
+            fetched_days: list[date] = []
+            now_utc = dt_util.utcnow()
+            today_utc = now_utc.date()
+
+            if last_start is None:
+                fetch_start_day = now_utc.replace(
+                    day=1, hour=0, minute=0, second=0, microsecond=0
+                ).date()
+            else:
+                fetch_start_day = (last_start + timedelta(hours=1)).date()
+
+            if fetch_start_day <= today_utc:
+                day_cursor = fetch_start_day
+                while day_cursor <= today_utc:
+                    day_start = datetime.combine(day_cursor, time.min, dt_util.UTC)
+                    day_end = day_start + timedelta(days=1)
+                    fetched_days.append(day_cursor)
+                    fetched = await self._coordinator.async_fetch_hourly_consumption(
+                        self._account,
+                        day_start,
+                        day_end,
+                    )
+                    if not fetched:
+                        _LOGGER.debug(
+                            "%s: fetched 0 measurements for day %s",
+                            prefix,
+                            day_cursor,
+                        )
+                    else:
+                        additional_count += len(fetched)
+                        for item in fetched:
+                            start_at = item.get("startAt")
+                            if not start_at:
+                                continue
+                            measurements_by_start[start_at] = item
+                    day_cursor += timedelta(days=1)
+            else:
+                _LOGGER.debug(
+                    "%s: no additional days to fetch (fetch_start_day=%s today=%s)",
+                    prefix,
+                    fetch_start_day,
+                    today_utc,
+                )
+
+            total_measurements = len(measurements_by_start)
+            _LOGGER.debug(
+                "%s: consolidated measurements total=%s additional=%s fetched_days=%s",
+                prefix,
+                total_measurements,
+                additional_count,
+                fetched_days,
+            )
+            if not measurements_by_start:
+                _LOGGER.debug(
+                    "%s: no hourly consumption data available after consolidation",
+                    prefix,
+                )
+                return
+
+            measurements = list(measurements_by_start.values())
 
             metadata = {
                 "has_mean": False,

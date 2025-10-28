@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, time, timezone
 import logging
 import os
+from typing import Optional
 
 from python_graphql_client import GraphqlClient
 
@@ -59,7 +60,12 @@ class OctopusSpain:
 
         return list(map(lambda a: a["number"], response["data"]["viewer"]["accounts"]))
 
-    async def hourly_consumption(self, account: str):
+    async def hourly_consumption(
+        self,
+        account: str,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+    ):
 
         query = """
             query getMeasurements(
@@ -94,13 +100,42 @@ class OctopusSpain:
             }
         """
 
+        if self._token is None:
+            if not await self.login():
+                _LOGGER.error(
+                    "Unable to fetch hourly consumption for account %s due to login failure",
+                    account,
+                )
+                return []
+
         tz = timezone.utc
-        today_local = datetime.now(tz).date()
-        start_date = today_local - timedelta(days=10)
-        start_local = datetime.combine(start_date, time.min, tzinfo=tz)
-        end_local = datetime.combine(today_local + timedelta(days=1), time.min, tzinfo=tz)
+        now_utc = datetime.now(tz)
+
+        if end is None:
+            end_local = datetime.combine(now_utc.date() + timedelta(days=1), time.min, tzinfo=tz)
+        else:
+            end_local = end if end.tzinfo else end.replace(tzinfo=tz)
+            end_local = end_local.astimezone(tz)
+
+        if start is None:
+            default_start = now_utc.date() - timedelta(days=10)
+            start_local = datetime.combine(default_start, time.min, tzinfo=tz)
+        else:
+            start_local = start if start.tzinfo else start.replace(tzinfo=tz)
+            start_local = start_local.astimezone(tz)
+
+        if start_local >= end_local:
+            _LOGGER.debug(
+                "Skipping hourly consumption request for account %s because start %s >= end %s",
+                account,
+                start_local,
+                end_local,
+            )
+            return []
+
         start_utc = start_local.astimezone(timezone.utc)
         end_utc = end_local.astimezone(timezone.utc)
+
         def to_utc_iso_z(dt: datetime) -> str:
             return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
         variables = {
