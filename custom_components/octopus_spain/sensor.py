@@ -319,6 +319,7 @@ class OctopusConsumptionStatisticsImporter:
                                 continue
                             start_utc = _parse_dt(start_at)
                             if start_utc is None:
+                                skipped_additional_unparsed += 1
                                 continue
                             if start_utc < keep_from_utc:
                                 continue
