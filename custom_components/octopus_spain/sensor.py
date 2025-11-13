@@ -353,7 +353,7 @@ class OctopusConsumptionStatisticsImporter:
                 return
 
             metadata = {
-                "has_mean": False,
+                "mean_type": 0,
                 "has_sum": True,
                 "name": self._name,
                 "source": DOMAIN,
